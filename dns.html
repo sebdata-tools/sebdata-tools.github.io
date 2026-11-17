@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS records lookup: A, AAAA, MX, TXT, NS, CNAME, SOA, CAA</title>
+<meta name="description" content="Free DNS lookup in your browser: A, AAAA, MX, TXT, NS, CNAME, SOA and CAA records of any host name, resolved through Google Public DNS over HTTPS.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav><a href="./">All tools</a><a href="rdap.html">WHOIS / RDAP</a><a href="jobs.html">Job boards</a><a href="shopify.html">Shopify</a></nav>
+<h1>DNS records lookup</h1>
+<p class="lead">The DNS records of a host name, resolved through Google Public DNS over HTTPS (dns.google).</p>
+<form id="form">
+  <input type="text" id="q" placeholder="example.com" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+  <select id="type" aria-label="Record type">
+    <option value="ALL">All common types</option>
+    <option>A</option><option>AAAA</option><option>MX</option><option>TXT</option>
+    <option>NS</option><option>CNAME</option><option>SOA</option><option>CAA</option>
+  </select>
+  <button>Look up</button>
+</form>
+<p id="status"></p>
+<div id="result"></div>
+<p class="hosted">For a domain's registration data (dates, registrar, nameservers) in bulk or by API: the hosted <a href="https://apify.com/sebdata/domain-rdap-lookup">WHOIS Domain Lookup via RDAP</a> Actor.</p>
+<footer>This site and its code were made by an AI agent.</footer>
+<script src="common.js"></script>
+<script>
+'use strict';
+const TYPES = { 1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 15: 'MX', 16: 'TXT', 28: 'AAAA', 257: 'CAA' };
+const ALL = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'CAA'];
+const RCODE = { 2: 'the name servers failed to answer (SERVFAIL)', 3: 'this name does not exist (NXDOMAIN)', 5: 'the query was refused' };
+
+wire(async () => {
+  const host = hostFromInput($('q').value);
+  if (!host) throw new Error('Enter a host name, for example example.com.');
+  const wanted = $('type').value === 'ALL' ? ALL : [$('type').value];
+  const answers = await Promise.all(wanted.map((t) =>
+    getJson('https://dns.google/resolve?name=' + encodeURIComponent(host) + '&type=' + t)));
+  const rows = [];
+  const seen = new Set();
+  let rcode = 0;
+  answers.forEach((r, i) => {
+    if (!r.ok || !r.body) throw new Error('dns.google answered with status ' + r.status + '.');
+    if (r.body.Status) rcode = r.body.Status;
+    for (const a of r.body.Answer || []) {
+      const type = TYPES[a.type] || String(a.type);
+      // A query for A on an alias also returns the CNAME: keep each record once.
+      if (wanted.length > 1 && type !== wanted[i]) continue;
+      const key = type + '|' + a.name + '|' + a.data;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push([type, String(a.name).replace(/\.$/, ''), String(a.data), String(a.TTL)]);
+    }
+  });
+  if (!rows.length) {
+    setStatus(rcode && RCODE[rcode] ? host + ': ' + RCODE[rcode] + '.' : host + ': no records of ' + (wanted.length > 1 ? 'these types' : 'type ' + wanted[0]) + '.', Boolean(rcode));
+    return;
+  }
+  renderTable(['Type', 'Name', 'Value', 'TTL (s)'], rows);
+  setStatus(rows.length + ' record' + (rows.length === 1 ? '' : 's') + '.');
+});
+</script>
+</body>
+</html>

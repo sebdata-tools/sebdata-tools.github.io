@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job board viewer: all open jobs on a Greenhouse, Lever or Ashby board</title>
+<meta name="description" content="Free viewer for company job boards hosted on Greenhouse, Lever or Ashby: every open job with department, location and link in one table, exportable as CSV.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav><a href="./">All tools</a><a href="rdap.html">WHOIS / RDAP</a><a href="dns.html">DNS</a><a href="shopify.html">Shopify</a></nav>
+<h1>Job board viewer</h1>
+<p class="lead">All open jobs of a company that hires through Greenhouse, Lever or Ashby, read from the board's public API. Enter the company's board name (the last part of its job board address, e.g. <code>boards.greenhouse.io/<b>stripe</b></code>) or paste the board's address.</p>
+<form id="form">
+  <input type="text" id="q" placeholder="stripe  or  https://jobs.lever.co/company" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+  <select id="ats" aria-label="Job board system">
+    <option value="auto">Find the system</option>
+    <option value="greenhouse">Greenhouse</option>
+    <option value="lever">Lever</option>
+    <option value="ashby">Ashby</option>
+  </select>
+  <button>Show jobs</button>
+</form>
+<p id="status"></p>
+<p><button id="csv" type="button" hidden>Download CSV</button></p>
+<div id="result"></div>
+<p class="hosted">For many companies at once, more job board systems, only-new-jobs runs on a schedule, or by API: the hosted <a href="https://apify.com/sebdata/ats-jobs-feed">ATS Jobs Scraper</a> Actor.</p>
+<footer>This site and its code were made by an AI agent.</footer>
+<script src="common.js"></script>
+<script src="csv.js"></script>
+<script>
+'use strict';
+const HOSTS = [
+  [/(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io\/(?:embed\/job_board\?for=)?([\w.-]+)/i, 'greenhouse'],
+  [/jobs(?:\.eu)?\.lever\.co\/([\w.-]+)/i, 'lever'],
+  [/jobs\.ashbyhq\.com\/([\w.%-]+)/i, 'ashby'],
+];
+const BOARDS = {
+  greenhouse: {
+    url: (s) => 'https://boards-api.greenhouse.io/v1/boards/' + encodeURIComponent(s) + '/jobs?content=true',
+    rows: (b) => (b.jobs || []).map((j) => ({
+      title: j.title, department: (j.departments || []).map((d) => d.name).join(', '),
+      location: (j.location || {}).name || '', updated: (j.updated_at || '').slice(0, 10), url: j.absolute_url,
+    })),
+  },
+  lever: {
+    url: (s) => 'https://api.lever.co/v0/postings/' + encodeURIComponent(s) + '?mode=json',
+    rows: (b) => (Array.isArray(b) ? b : []).map((j) => ({
+      title: j.text, department: (j.categories || {}).team || (j.categories || {}).department || '',
+      location: (j.categories || {}).location || '', updated: j.createdAt ? new Date(j.createdAt).toISOString().slice(0, 10) : '', url: j.hostedUrl,
+    })),
+  },
+  ashby: {
+    url: (s) => 'https://api.ashbyhq.com/posting-api/job-board/' + encodeURIComponent(s),
+    rows: (b) => (b.jobs || []).map((j) => ({
+      title: j.title, department: j.department || j.team || '',
+      location: j.location || '', updated: (j.publishedAt || '').slice(0, 10), url: j.jobUrl,
+    })),
+  },
+};
+let lastRows = [];
+
+async function load(ats, slug) {
+  const r = await getJson(BOARDS[ats].url(slug));
+  if (!r.ok || !r.body) return null;
+  return BOARDS[ats].rows(r.body);
+}
+
+wire(async () => {
+  $('csv').hidden = true;
+  const raw = $('q').value.trim();
+  let ats = $('ats').value;
+  let slug = raw;
+  for (const [re, name] of HOSTS) {
+    const m = raw.match(re);
+    if (m) { ats = name; slug = decodeURIComponent(m[1]); break; }
+  }
+  if (!/^[\w.% -]{1,80}$/.test(slug)) throw new Error('Enter a board name (letters, digits, dashes) or a Greenhouse, Lever or Ashby board address.');
+  let jobs = null;
+  let used = ats;
+  if (ats === 'auto') {
+    for (const name of Object.keys(BOARDS)) {
+      jobs = await load(name, slug);
+      if (jobs && jobs.length) { used = name; break; }
+    }
+  } else {
+    jobs = await load(ats, slug);
+  }
+  if (!jobs || !jobs.length) {
+    setStatus('No open jobs found for "' + slug + '"' + (ats === 'auto' ? ' on Greenhouse, Lever or Ashby' : ' on ' + ats) + '. Check the board name: it is the last part of the company\'s job board address.');
+    return;
+  }
+  lastRows = jobs;
+  renderTable(['Title', 'Department', 'Location', 'Date', 'Link'],
+    jobs.map((j) => [j.title, j.department, j.location, j.updated, { text: 'open', href: j.url }]));
+  setStatus(jobs.length + ' open job' + (jobs.length === 1 ? '' : 's') + ' on ' + used[0].toUpperCase() + used.slice(1) + ' board "' + slug + '".');
+  $('csv').hidden = false;
+});
+
+$('csv').addEventListener('click', () => downloadCsv('jobs.csv', ['title', 'department', 'location', 'updated', 'url'], lastRows));
+</script>
+</body>
+</html>

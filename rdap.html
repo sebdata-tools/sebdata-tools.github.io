@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WHOIS / RDAP domain lookup: registration date, expiry, registrar</title>
+<meta name="description" content="Free WHOIS lookup over RDAP, the official successor of WHOIS: registration and expiry dates, registrar, status codes and nameservers of a domain. Runs in your browser.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav><a href="./">All tools</a><a href="dns.html">DNS</a><a href="jobs.html">Job boards</a><a href="shopify.html">Shopify</a></nav>
+<h1>WHOIS / RDAP domain lookup</h1>
+<p class="lead">Registration and expiry dates, registrar, status and nameservers, read from the registry's official RDAP server (the successor of WHOIS). No contact data is shown.</p>
+<form id="form">
+  <input type="text" id="q" placeholder="example.com" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+  <button>Look up</button>
+</form>
+<p id="status"></p>
+<div id="result"></div>
+<p class="note">How it works: the registry for the domain's ending is found in IANA's RDAP list (data.iana.org), then that registry's server is asked once. Endings without an RDAP server cannot be looked up; .uk is left out because its registry's terms do not allow this use.</p>
+<p class="hosted">For many domains at once, on a schedule or by API: the hosted <a href="https://apify.com/sebdata/domain-rdap-lookup">WHOIS Domain Lookup via RDAP</a> Actor.</p>
+<footer>This site and its code were made by an AI agent.</footer>
+<script src="common.js"></script>
+<script>
+'use strict';
+const EXCLUDED = new Set(['uk']);
+let bootstrap = null;
+
+async function rdapBase(tld) {
+  if (!bootstrap) {
+    const r = await getJson('https://data.iana.org/rdap/dns.json');
+    if (!r.ok || !r.body || !Array.isArray(r.body.services)) throw new Error('Could not load IANA\'s list of RDAP servers.');
+    bootstrap = new Map();
+    for (const [tlds, urls] of r.body.services) {
+      const url = (urls || []).find((u) => u.startsWith('https://'));
+      if (url) for (const t of tlds) bootstrap.set(t.toLowerCase(), url.endsWith('/') ? url : url + '/');
+    }
+  }
+  return bootstrap.get(tld);
+}
+
+const eventDate = (d, action) => ((d.events || []).find((e) => e.eventAction === action) || {}).eventDate || '';
+
+function registrar(d) {
+  const e = (d.entities || []).find((x) => (x.roles || []).includes('registrar'));
+  if (!e) return { name: '', ianaId: '' };
+  const fn = ((e.vcardArray || [])[1] || []).find((v) => v[0] === 'fn');
+  const id = (e.publicIds || []).find((p) => /iana/i.test(p.type || ''));
+  return { name: fn ? String(fn[3]) : '', ianaId: id ? String(id.identifier) : '' };
+}
+
+wire(async () => {
+  const host = hostFromInput($('q').value);
+  if (!host) throw new Error('Enter a domain name, for example example.com.');
+  const labels = host.split('.');
+  const tld = labels[labels.length - 1];
+  if (EXCLUDED.has(tld)) throw new Error('.' + tld + ' domains are not supported by this tool.');
+  const base = await rdapBase(tld);
+  if (!base) throw new Error('The registry of .' + tld + ' has no RDAP server, so it cannot be looked up here.');
+  // Ask for the name as typed, then its parents (www.example.com -> example.com): at most 3 requests.
+  const names = [];
+  for (let i = 0; i <= labels.length - 2 && names.length < 3; i++) names.push(labels.slice(i).join('.'));
+  let found = null;
+  let last = null;
+  for (const name of names) {
+    last = await getJson(base + 'domain/' + encodeURIComponent(name), { headers: { Accept: 'application/rdap+json' } });
+    if (last.ok && last.body) { found = { name, d: last.body }; break; }
+    if (last.status !== 404 && last.status !== 400) break;
+  }
+  if (!found) {
+    if (last && last.status === 404) { setStatus(names[names.length - 1] + ': not found at the registry. It is not registered (or the registry does not publish it).'); return; }
+    if (last && last.status === 429) throw new Error('The registry is rate-limiting requests. Try again in a minute.');
+    throw new Error('The registry answered with status ' + (last ? last.status : 'unknown') + '.');
+  }
+  const d = found.d;
+  const reg = registrar(d);
+  const rows = [
+    ['Domain', (d.ldhName || found.name).toLowerCase()],
+    ['Registered', eventDate(d, 'registration')],
+    ['Expires', eventDate(d, 'expiration')],
+    ['Last changed', eventDate(d, 'last changed')],
+    ['Registrar', reg.name + (reg.ianaId ? ' (IANA ID ' + reg.ianaId + ')' : '')],
+    ['Status', (d.status || []).join(', ')],
+    ['Nameservers', (d.nameservers || []).map((n) => String(n.ldhName || '').toLowerCase()).filter(Boolean).join(', ')],
+    ['DNSSEC', d.secureDNS ? (d.secureDNS.delegationSigned ? 'signed' : 'unsigned') : ''],
+    ['RDAP server', base],
+  ].filter((r) => r[1]);
+  renderTable(['Field', 'Value'], rows);
+  setStatus('Registered.');
+});
+</script>
+</body>
+</html>

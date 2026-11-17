@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shopify product list: all products and prices of a Shopify store</title>
+<meta name="description" content="Free tool that lists the products of a Shopify store with prices, variants and stock status from the store's public products.json, exportable as CSV. Runs in your browser.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav><a href="./">All tools</a><a href="rdap.html">WHOIS / RDAP</a><a href="dns.html">DNS</a><a href="jobs.html">Job boards</a></nav>
+<h1>Shopify product list</h1>
+<p class="lead">The products of a Shopify store with prices and stock status, read from the store's public <code>/products.json</code>. Up to 1,000 products (4 pages of 250).</p>
+<form id="form">
+  <input type="text" id="q" placeholder="store.example.com" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+  <button>List products</button>
+</form>
+<p id="status"></p>
+<p><button id="csv" type="button" hidden>Download CSV</button></p>
+<div id="result"></div>
+<p class="note">Some stores do not allow this file to be read from another website's page, or protect it with a password; the tool then says so and cannot go further.</p>
+<p class="hosted">For whole catalogues, many stores at once, one row per variant, on a schedule or by API: the hosted <a href="https://apify.com/sebdata/shopify-products">Shopify Products Scraper</a> Actor.</p>
+<footer>This site and its code were made by an AI agent.</footer>
+<script src="common.js"></script>
+<script src="csv.js"></script>
+<script>
+'use strict';
+const MAX_PAGES = 4;
+let lastRows = [];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+wire(async () => {
+  $('csv').hidden = true;
+  const host = hostFromInput($('q').value);
+  if (!host) throw new Error('Enter the store\'s address, for example store.example.com.');
+  const rows = [];
+  let more = false;
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    setStatus('Loading page ' + page + '…');
+    const r = await getJson('https://' + host + '/products.json?limit=250&page=' + page, { timeoutMs: 25000 });
+    if (r.status === 401) throw new Error('This store is password-protected.');
+    if (r.status === 403) throw new Error('This store refuses automated requests for its product list (status 403).');
+    if (r.status === 404) throw new Error('No /products.json here: this does not look like a Shopify store.');
+    if (r.status === 429 || r.status === 430) { if (rows.length) { more = true; break; } throw new Error('The store is rate-limiting requests. Try again in a minute.'); }
+    if (!r.ok || !r.body || !Array.isArray(r.body.products)) throw new Error('The store did not return a product list (status ' + r.status + ').');
+    for (const p of r.body.products) {
+      const prices = (p.variants || []).map((v) => parseFloat(v.price)).filter((n) => !Number.isNaN(n));
+      const min = prices.length ? Math.min(...prices) : null;
+      const max = prices.length ? Math.max(...prices) : null;
+      rows.push({
+        title: p.title, vendor: p.vendor || '', type: p.product_type || '',
+        price: min == null ? '' : (min === max ? min.toFixed(2) : min.toFixed(2) + ' – ' + max.toFixed(2)),
+        variants: (p.variants || []).length,
+        available: (p.variants || []).some((v) => v.available) ? 'yes' : 'no',
+        updated: (p.updated_at || '').slice(0, 10),
+        url: 'https://' + host + '/products/' + encodeURIComponent(p.handle || ''),
+      });
+    }
+    if (r.body.products.length < 250) break;
+    if (page === MAX_PAGES) more = true; else await sleep(400);
+  }
+  if (!rows.length) { setStatus('The store lists no products.'); return; }
+  lastRows = rows;
+  renderTable(['Product', 'Vendor', 'Type', 'Price', 'Variants', 'In stock', 'Updated', 'Link'],
+    rows.map((p) => [p.title, p.vendor, p.type, p.price, String(p.variants), p.available, p.updated, { text: 'open', href: p.url }]));
+  setStatus(rows.length + ' product' + (rows.length === 1 ? '' : 's') + (more ? ' (the store has more; this tool stops here)' : '') + '. Prices are in the store\'s own currency.');
+  $('csv').hidden = false;
+});
+
+$('csv').addEventListener('click', () => downloadCsv('products.csv', ['title', 'vendor', 'type', 'price', 'variants', 'available', 'updated', 'url'], lastRows));
+</script>
+</body>
+</html>
